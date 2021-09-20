@@ -1,35 +1,35 @@
-import torch as th
-from transformers import AutoModel, AutoTokenizer
-import torch.nn.functional as F
-from utils import *
-import dgl
-import torch.utils.data as Data
-from ignite.engine import Events, create_supervised_evaluator, create_supervised_trainer, Engine
-from ignite.metrics import Accuracy, Loss
-from sklearn.metrics import accuracy_score
-import numpy as np
+import argparse
+import logging
 import os
 import shutil
-import argparse
-import sys
-import logging
-from datetime import datetime
+
+import dgl
+import torch as th
+import torch.nn.functional as F
+import torch.utils.data as Data
+from ignite.engine import Events, Engine
+from ignite.metrics import Accuracy, Loss, Precision, Recall, Fbeta
+from sklearn.metrics import accuracy_score
 from torch.optim import lr_scheduler
+
 from model import BertGCN, BertGAT
+from utils import *
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
-parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--max_length', type=int, default=512, help='the input length for bert')
+parser.add_argument('--batch_size', type=int, default=8)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
 parser.add_argument('--nb_epochs', type=int, default=50)
 parser.add_argument('--bert_init', type=str, default='roberta-base',
                     choices=['roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
 parser.add_argument('--pretrained_bert_ckpt', default=None)
-parser.add_argument('--dataset', default='20ng', choices=['20ng', 'R8', 'R52', 'ohsumed', 'mr'])
-parser.add_argument('--checkpoint_dir', default=None, help='checkpoint directory, [bert_init]_[gcn_model]_[dataset] if not specified')
+parser.add_argument('--dataset', default='20ng', choices=['20ng', 'R8', 'R52', 'ohsumed', 'mr', 'enwiki'])
+parser.add_argument('--checkpoint_dir', default=None,
+                    help='checkpoint directory, [bert_init]_[gcn_model]_[dataset] if not specified')
 parser.add_argument('--gcn_model', type=str, default='gcn', choices=['gcn', 'gat'])
 parser.add_argument('--gcn_layers', type=int, default=2)
-parser.add_argument('--n_hidden', type=int, default=200, help='the dimension of gcn hidden layer, the dimension for gat is n_hidden * heads')
+parser.add_argument('--n_hidden', type=int, default=200,
+                    help='the dimension of gcn hidden layer, the dimension for gat is n_hidden * heads')
 parser.add_argument('--heads', type=int, default=8, help='the number of attentionn heads for gat')
 parser.add_argument('--dropout', type=float, default=0.5)
 parser.add_argument('--gcn_lr', type=float, default=1e-3)
@@ -71,7 +71,7 @@ logger.addHandler(fh)
 logger.setLevel(logging.INFO)
 
 cpu = th.device('cpu')
-gpu = th.device('cuda:0')
+gpu = cpu  # th.device('cuda:0')
 
 logger.info('arguments:')
 logger.info(str(args))
@@ -101,37 +101,35 @@ else:
     model = BertGAT(nb_class=nb_class, pretrained_model=bert_init, m=m, gcn_layers=gcn_layers,
                     heads=heads, n_hidden=n_hidden, dropout=dropout)
 
-
 if pretrained_bert_ckpt is not None:
     ckpt = th.load(pretrained_bert_ckpt, map_location=gpu)
     model.bert_model.load_state_dict(ckpt['bert_model'])
     model.classifier.load_state_dict(ckpt['classifier'])
 
-
 # load documents and compute input encodings
-corpse_file = './data/corpus/' + dataset +'_shuffle.txt'
+corpse_file = './data/corpus/' + dataset + '_shuffle.txt'
 with open(corpse_file, 'r') as f:
     text = f.read()
     text = text.replace('\\', '')
     text = text.split('\n')
 
+
 def encode_input(text, tokenizer):
     input = tokenizer(text, max_length=max_length, truncation=True, padding='max_length', return_tensors='pt')
-#     print(input.keys())
+    #     print(input.keys())
     return input.input_ids, input.attention_mask
 
 
 input_ids, attention_mask = encode_input(text, model.tokenizer)
 input_ids = th.cat([input_ids[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), input_ids[-nb_test:]])
-attention_mask = th.cat([attention_mask[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), attention_mask[-nb_test:]])
+attention_mask = th.cat(
+    [attention_mask[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), attention_mask[-nb_test:]])
 
 # transform one-hot label to class ID for pytorch computation
 y = y_train + y_test + y_val
-y_train = y_train.argmax(axis=1)
-y = y.argmax(axis=1)
 
 # document mask used for update feature
-doc_mask  = train_mask + val_mask + test_mask
+doc_mask = train_mask + val_mask + test_mask
 
 # build DGL Graph
 adj_norm = normalize_adj(adj + sp.eye(adj.shape[0]))
@@ -148,7 +146,7 @@ logger.info(str(g))
 # create index loader
 train_idx = Data.TensorDataset(th.arange(0, nb_train, dtype=th.long))
 val_idx = Data.TensorDataset(th.arange(nb_train, nb_train + nb_val, dtype=th.long))
-test_idx = Data.TensorDataset(th.arange(nb_node-nb_test, nb_node, dtype=th.long))
+test_idx = Data.TensorDataset(th.arange(nb_node - nb_test, nb_node, dtype=th.long))
 doc_idx = Data.ConcatDataset([train_idx, val_idx, test_idx])
 
 idx_loader_train = Data.DataLoader(train_idx, batch_size=batch_size, shuffle=True)
@@ -156,10 +154,11 @@ idx_loader_val = Data.DataLoader(val_idx, batch_size=batch_size)
 idx_loader_test = Data.DataLoader(test_idx, batch_size=batch_size)
 idx_loader = Data.DataLoader(doc_idx, batch_size=batch_size, shuffle=True)
 
+
 # Training
 def update_feature():
     global model, g, doc_mask
-    # no gradient needed, uses a large batchsize to speed up the process
+    # no gradient needed, uses a large batch size to speed up the process
     dataloader = Data.DataLoader(
         Data.TensorDataset(g.ndata['input_ids'][doc_mask], g.ndata['attention_mask'][doc_mask]),
         batch_size=1024
@@ -179,10 +178,10 @@ def update_feature():
 
 
 optimizer = th.optim.Adam([
-        {'params': model.bert_model.parameters(), 'lr': bert_lr},
-        {'params': model.classifier.parameters(), 'lr': bert_lr},
-        {'params': model.gcn.parameters(), 'lr': gcn_lr},
-    ], lr=1e-3
+    {'params': model.bert_model.parameters(), 'lr': bert_lr},
+    {'params': model.classifier.parameters(), 'lr': bert_lr},
+    {'params': model.gcn.parameters(), 'lr': gcn_lr},
+], lr=1e-3
 )
 scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[30], gamma=0.1)
 
@@ -193,12 +192,13 @@ def train_step(engine, batch):
     model = model.to(gpu)
     g = g.to(gpu)
     optimizer.zero_grad()
-    (idx, ) = [x.to(gpu) for x in batch]
+    (idx,) = [x.to(gpu) for x in batch]
     optimizer.zero_grad()
     train_mask = g.ndata['train'][idx].type(th.BoolTensor)
-    y_pred = model(g, idx)[train_mask]
-    y_true = g.ndata['label_train'][idx][train_mask]
-    loss = F.nll_loss(y_pred, y_true)
+    y_pred = model(g, idx)[train_mask].float()
+    y_true = g.ndata['label_train'][idx][train_mask].float()
+    # NOTE: must be 2 floats
+    loss = F.binary_cross_entropy(y_pred, y_true)
     loss.backward()
     optimizer.step()
     g.ndata['cls_feats'].detach_()
@@ -229,16 +229,20 @@ def test_step(engine, batch):
         model.eval()
         model = model.to(gpu)
         g = g.to(gpu)
-        (idx, ) = [x.to(gpu) for x in batch]
-        y_pred = model(g, idx)
-        y_true = g.ndata['label'][idx]
+        (idx,) = [x.to(gpu) for x in batch]
+        # NOTE: must be 2 floats
+        y_pred = model(g, idx).float()
+        y_true = g.ndata['label'][idx].float()
         return y_pred, y_true
 
 
 evaluator = Engine(test_step)
-metrics={
-    'acc': Accuracy(),
-    'nll': Loss(th.nn.NLLLoss())
+metrics = {
+    'acc': Accuracy(is_multilabel=True),
+    'pre': Precision(is_multilabel=True, average=True),
+    'rec': Recall(is_multilabel=True, average=True),
+    'f1': Fbeta(beta=1, average=True),
+    'nll': Loss(th.nn.BCELoss())
 }
 for n, f in metrics.items():
     f.attach(evaluator, n)
@@ -248,16 +252,21 @@ for n, f in metrics.items():
 def log_training_results(trainer):
     evaluator.run(idx_loader_train)
     metrics = evaluator.state.metrics
-    train_acc, train_nll = metrics["acc"], metrics["nll"]
+    train_acc, train_nll, train_pre, train_rec, train_f1 = metrics["acc"], metrics["nll"], metrics["pre"], metrics[
+        "rec"], metrics["f1"]
     evaluator.run(idx_loader_val)
     metrics = evaluator.state.metrics
-    val_acc, val_nll = metrics["acc"], metrics["nll"]
+    val_acc, val_nll, val_pre, val_rec, val_f1 = metrics["acc"], metrics["nll"], metrics["pre"], metrics["rec"], \
+                                                 metrics["f1"]
     evaluator.run(idx_loader_test)
     metrics = evaluator.state.metrics
-    test_acc, test_nll = metrics["acc"], metrics["nll"]
+    test_acc, test_nll, test_pre, test_rec, test_f1 = metrics["acc"], metrics["nll"], metrics["pre"], metrics["rec"], \
+                                                      metrics["f1"]
     logger.info(
-        "Epoch: {}  Train acc: {:.4f} loss: {:.4f}  Val acc: {:.4f} loss: {:.4f}  Test acc: {:.4f} loss: {:.4f}"
-        .format(trainer.state.epoch, train_acc, train_nll, val_acc, val_nll, test_acc, test_nll)
+        "Epoch: {}  Train acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f} Val acc: {:.4f} loss: {:.4f} "
+        "pre: {:.4f} rec: {:.4f} f1: {:.4f} Test acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f}"
+            .format(trainer.state.epoch, train_acc, train_nll, train_pre, train_rec, train_f1, val_acc, val_nll,
+                    val_pre, val_rec, val_f1, test_acc, test_nll, test_pre, test_rec, test_f1)
     )
     if val_acc > log_training_results.best_val_acc:
         logger.info("New checkpoint")

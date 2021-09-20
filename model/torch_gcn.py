@@ -4,10 +4,11 @@ References:
 - Paper: https://arxiv.org/abs/1609.02907
 - Code: https://github.com/tkipf/gcn
 """
-import torch
 import torch.nn as nn
+
 # from dgl.nn import GraphConv
 from .graphconv_edge_weight import GraphConvEdgeWeight as GraphConv
+
 
 class GCN(nn.Module):
     def __init__(self,

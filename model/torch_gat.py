@@ -7,9 +7,7 @@ Author's code: https://github.com/PetarV-/GAT
 Pytorch implementation: https://github.com/Diego999/pyGAT
 """
 
-import torch
 import torch.nn as nn
-import dgl.function as fn
 from dgl.nn import GATConv
 
 
@@ -25,7 +23,7 @@ class GAT(nn.Module):
                  attn_drop=0,
                  negative_slope=0.2,
                  residual=False
-    ):
+                 ):
         super(GAT, self).__init__()
         self.num_layers = num_layers
         self.gat_layers = nn.ModuleList()
@@ -38,7 +36,7 @@ class GAT(nn.Module):
         for l in range(1, num_layers):
             # due to multi-head, the in_dim = num_hidden * num_heads
             self.gat_layers.append(GATConv(
-                num_hidden * heads[l-1], num_hidden, heads[l],
+                num_hidden * heads[l - 1], num_hidden, heads[l],
                 feat_drop, attn_drop, negative_slope, residual, self.activation))
         # output projection
         self.gat_layers.append(GATConv(

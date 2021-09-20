@@ -1,12 +1,13 @@
-from dgl.nn.pytorch import GraphConv
+import torch as th
 from dgl import function as fn
 from dgl.base import DGLError
+from dgl.nn.pytorch import GraphConv
 from dgl.utils import expand_as_pair
-import torch as th
+
 
 class GraphConvEdgeWeight(GraphConv):
 
-    def forward(self, graph, feat,  weight=None, edge_weights=None):
+    def forward(self, graph, feat, weight=None, edge_weights=None):
         with graph.local_scope():
             if not self._allow_zero_in_degree:
                 if (graph.in_degrees() == 0).any():

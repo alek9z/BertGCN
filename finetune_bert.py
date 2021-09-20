@@ -1,28 +1,30 @@
-import torch as th
-from transformers import AutoModel, AutoTokenizer
-import torch.nn.functional as F
-from utils import *
-import dgl
-import torch.utils.data as Data
-from ignite.engine import Events, create_supervised_evaluator, create_supervised_trainer, Engine
-from ignite.metrics import Accuracy, Loss
-import numpy as np
+import argparse
+import logging
 import os
-from datetime import datetime
+import shutil
+
+import torch
+import torch as th
+import torch.nn.functional as F
+import torch.utils.data as Data
+from ignite.engine import Events, Engine
+from ignite.metrics import Accuracy, Loss, Recall, Precision, Fbeta
 from sklearn.metrics import accuracy_score
-import argparse, shutil, logging
 from torch.optim import lr_scheduler
+
 from model import BertClassifier
+from utils import *
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
-parser.add_argument('--batch_size', type=int, default=128)
-parser.add_argument('--nb_epochs', type=int, default=60)
-parser.add_argument('--bert_lr', type=float, default=1e-4)
-parser.add_argument('--dataset', default='20ng', choices=['20ng', 'R8', 'R52', 'ohsumed', 'mr'])
+parser.add_argument('--max_length', type=int, default=512, help='the input length for bert')
+parser.add_argument('--batch_size', type=int, default=8)
+parser.add_argument('--nb_epochs', type=int, default=10)
+parser.add_argument('--bert_lr', type=float, default=1.5e-5)
+parser.add_argument('--dataset', default='20ng', choices=['20ng', 'R8', 'R52', 'ohsumed', 'mr', "enwiki"])
 parser.add_argument('--bert_init', type=str, default='roberta-base',
                     choices=['roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
-parser.add_argument('--checkpoint_dir', default=None, help='checkpoint directory, [bert_init]_[dataset] if not specified')
+parser.add_argument('--checkpoint_dir', default=None,
+                    help='checkpoint directory, [bert_init]_[dataset] if not specified')
 
 args = parser.parse_args()
 
@@ -77,35 +79,38 @@ nb_class = y_train.shape[1]
 model = BertClassifier(pretrained_model=bert_init, nb_class=nb_class)
 
 # transform one-hot label to class ID for pytorch computation
-y = th.LongTensor((y_train + y_val +y_test).argmax(axis=1))
+y = th.LongTensor(y_train + y_val + y_test)
 label = {}
-label['train'], label['val'], label['test'] = y[:nb_train], y[nb_train:nb_train+nb_val], y[-nb_test:]
+label['train'], label['val'], label['test'] = y[:nb_train], y[nb_train:nb_train + nb_val], y[-nb_test:]
 
 # load documents and compute input encodings
-corpus_file = './data/corpus/'+dataset+'_shuffle.txt'
+corpus_file = './data/corpus/' + dataset + '_shuffle.txt'
 with open(corpus_file, 'r') as f:
     text = f.read()
-    text=text.replace('\\', '')
+    text = text.replace('\\', '')
     text = text.split('\n')
+
 
 def encode_input(text, tokenizer):
     input = tokenizer(text, max_length=max_length, truncation=True, padding=True, return_tensors='pt')
     return input.input_ids, input.attention_mask
+
 
 input_ids, attention_mask = {}, {}
 
 input_ids_, attention_mask_ = encode_input(text, model.tokenizer)
 
 # create train/test/val datasets and dataloaders
-input_ids['train'], input_ids['val'], input_ids['test'] =  input_ids_[:nb_train], input_ids_[nb_train:nb_train+nb_val], input_ids_[-nb_test:]
-attention_mask['train'], attention_mask['val'], attention_mask['test'] =  attention_mask_[:nb_train], attention_mask_[nb_train:nb_train+nb_val], attention_mask_[-nb_test:]
+input_ids['train'], input_ids['val'], input_ids['test'] = \
+    input_ids_[:nb_train], input_ids_[nb_train:nb_train + nb_val], input_ids_[-nb_test:]
+attention_mask['train'], attention_mask['val'], attention_mask['test'] = \
+    attention_mask_[:nb_train], attention_mask_[nb_train:nb_train + nb_val], attention_mask_[-nb_test:]
 
 datasets = {}
 loader = {}
 for split in ['train', 'val', 'test']:
-    datasets[split] =  Data.TensorDataset(input_ids[split], attention_mask[split], label[split])
+    datasets[split] = Data.TensorDataset(input_ids[split], attention_mask[split], label[split])
     loader[split] = Data.DataLoader(datasets[split], batch_size=batch_size, shuffle=True)
-
 
 # Training
 
@@ -121,14 +126,14 @@ def train_step(engine, batch):
     (input_ids, attention_mask, label) = [x.to(gpu) for x in batch]
     optimizer.zero_grad()
     y_pred = model(input_ids, attention_mask)
-    y_true = label.type(th.long)
-    loss = F.cross_entropy(y_pred, y_true)
+    y_true = label.float()
+    loss = F.binary_cross_entropy_with_logits(y_pred, y_true)
     loss.backward()
     optimizer.step()
     train_loss = loss.item()
     with th.no_grad():
         y_true = y_true.detach().cpu()
-        y_pred = y_pred.argmax(axis=1).detach().cpu()
+        y_pred = torch.round(th.sigmoid(y_pred)).detach().cpu()
         train_acc = accuracy_score(y_true, y_pred)
     return train_loss, train_acc
 
@@ -144,14 +149,18 @@ def test_step(engine, batch):
         (input_ids, attention_mask, label) = [x.to(gpu) for x in batch]
         optimizer.zero_grad()
         y_pred = model(input_ids, attention_mask)
-        y_true = label
+        y_pred = torch.round(th.sigmoid(y_pred)).float()
+        y_true = label.float()
         return y_pred, y_true
 
 
 evaluator = Engine(test_step)
-metrics={
-    'acc': Accuracy(),
-    'nll': Loss(th.nn.CrossEntropyLoss())
+metrics = {
+    'acc': Accuracy(is_multilabel=True),
+    'pre': Precision(is_multilabel=True, average=True),
+    'rec': Recall(is_multilabel=True, average=True),
+    'f1': Fbeta(beta=1, average=True),
+    'nll': Loss(th.nn.BCELoss())
 }
 for n, f in metrics.items():
     f.attach(evaluator, n)
@@ -170,7 +179,7 @@ def log_training_results(trainer):
     test_acc, test_nll = metrics["acc"], metrics["nll"]
     logger.info(
         "\rEpoch: {}  Train acc: {:.4f} loss: {:.4f}  Val acc: {:.4f} loss: {:.4f}  Test acc: {:.4f} loss: {:.4f}"
-        .format(trainer.state.epoch, train_acc, train_nll, val_acc, val_nll, test_acc, test_nll)
+            .format(trainer.state.epoch, train_acc, train_nll, val_acc, val_nll, test_acc, test_nll)
     )
     if val_acc > log_training_results.best_val_acc:
         logger.info("New checkpoint")
@@ -188,6 +197,6 @@ def log_training_results(trainer):
         log_training_results.best_val_acc = val_acc
     scheduler.step()
 
-        
+
 log_training_results.best_val_acc = 0
 trainer.run(loader['train'], max_epochs=nb_epochs)
