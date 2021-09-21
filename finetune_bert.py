@@ -3,12 +3,11 @@ import logging
 import os
 import shutil
 
-import torch
 import torch as th
 import torch.nn.functional as F
 import torch.utils.data as Data
 from ignite.engine import Events, Engine
-from ignite.metrics import Accuracy, Loss, Recall, Precision, Fbeta
+from ignite.metrics import Accuracy, Loss, ClassificationReport
 from sklearn.metrics import accuracy_score
 from torch.optim import lr_scheduler
 
@@ -20,7 +19,8 @@ parser.add_argument('--max_length', type=int, default=512, help='the input lengt
 parser.add_argument('--batch_size', type=int, default=8)
 parser.add_argument('--nb_epochs', type=int, default=10)
 parser.add_argument('--bert_lr', type=float, default=1.5e-5)
-parser.add_argument('--dataset', default='20ng', choices=['20ng', 'R8', 'R52', 'ohsumed', 'mr', "enwiki"])
+parser.add_argument('--dataset', default='enwiki',
+                    choices=["enwiki", "itwiki", "frwiki", "rcv1en", "rcv2it", "rcv2fr"])
 parser.add_argument('--bert_init', type=str, default='roberta-base',
                     choices=['roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
 parser.add_argument('--checkpoint_dir', default=None,
@@ -133,7 +133,7 @@ def train_step(engine, batch):
     train_loss = loss.item()
     with th.no_grad():
         y_true = y_true.detach().cpu()
-        y_pred = torch.round(th.sigmoid(y_pred)).detach().cpu()
+        y_pred = th.round(th.sigmoid(y_pred)).detach().cpu()
         train_acc = accuracy_score(y_true, y_pred)
     return train_loss, train_acc
 
@@ -149,7 +149,7 @@ def test_step(engine, batch):
         (input_ids, attention_mask, label) = [x.to(gpu) for x in batch]
         optimizer.zero_grad()
         y_pred = model(input_ids, attention_mask)
-        y_pred = torch.round(th.sigmoid(y_pred)).float()
+        y_pred = th.round(th.sigmoid(y_pred)).float()
         y_true = label.float()
         return y_pred, y_true
 
@@ -157,9 +157,7 @@ def test_step(engine, batch):
 evaluator = Engine(test_step)
 metrics = {
     'acc': Accuracy(is_multilabel=True),
-    'pre': Precision(is_multilabel=True, average=True),
-    'rec': Recall(is_multilabel=True, average=True),
-    'f1': Fbeta(beta=1, average=True),
+    'cr': ClassificationReport(output_dict=True, is_multilabel=True),
     'nll': Loss(th.nn.BCELoss())
 }
 for n, f in metrics.items():
@@ -168,19 +166,26 @@ for n, f in metrics.items():
 
 @trainer.on(Events.EPOCH_COMPLETED)
 def log_training_results(trainer):
-    evaluator.run(loader['train'])
-    metrics = evaluator.state.metrics
-    train_acc, train_nll = metrics["acc"], metrics["nll"]
-    evaluator.run(loader['val'])
-    metrics = evaluator.state.metrics
-    val_acc, val_nll = metrics["acc"], metrics["nll"]
-    evaluator.run(loader['test'])
-    metrics = evaluator.state.metrics
-    test_acc, test_nll = metrics["acc"], metrics["nll"]
+    evaluator.run(loader["train"])
+    metrics_res = evaluator.state.metrics
+    train_acc, train_nll, train_cr = metrics_res["acc"], metrics_res["nll"], metrics_res["cr"]["macro avg"]
+    train_pre, train_rec, train_f1 = train_cr["precision"], train_cr["recall"], train_cr["f1-score"]
+
+    evaluator.run(loader["val"])
+    metrics_res = evaluator.state.metrics
+    val_acc, val_nll, val_cr = metrics_res["acc"], metrics_res["nll"], metrics_res["cr"]["macro avg"]
+    val_pre, val_rec, val_f1 = val_cr["precision"], val_cr["recall"], val_cr["f1-score"]
+
+    evaluator.run(loader["test"])
+    metrics_res = evaluator.state.metrics
+    test_acc, test_nll, test_cr = metrics_res["acc"], metrics_res["nll"], metrics_res["cr"]["macro avg"]
+    test_pre, test_rec, test_f1 = test_cr["precision"], test_cr["recall"], test_cr["f1-score"]
+
     logger.info(
-        "\rEpoch: {}  Train acc: {:.4f} loss: {:.4f}  Val acc: {:.4f} loss: {:.4f}  Test acc: {:.4f} loss: {:.4f}"
-            .format(trainer.state.epoch, train_acc, train_nll, val_acc, val_nll, test_acc, test_nll)
-    )
+        "Epoch: {}  Train acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f} || Val acc: {:.4f} loss: {:.4f} "
+        "pre: {:.4f} rec: {:.4f} f1: {:.4f} || Test acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f}"
+            .format(trainer.state.epoch, train_acc, train_nll, train_pre, train_rec, train_f1, val_acc, val_nll,
+                    val_pre, val_rec, val_f1, test_acc, test_nll, test_pre, test_rec, test_f1))
     if val_acc > log_training_results.best_val_acc:
         logger.info("New checkpoint")
         th.save(

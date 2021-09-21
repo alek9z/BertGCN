@@ -8,8 +8,8 @@ import torch as th
 import torch.nn.functional as F
 import torch.utils.data as Data
 from ignite.engine import Events, Engine
-from ignite.metrics import Accuracy, Loss, Precision, Recall, Fbeta
-from sklearn.metrics import accuracy_score
+from ignite.metrics import Accuracy, Loss, ClassificationReport
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from torch.optim import lr_scheduler
 
 from model import BertGCN, BertGAT
@@ -23,7 +23,7 @@ parser.add_argument('--nb_epochs', type=int, default=50)
 parser.add_argument('--bert_init', type=str, default='roberta-base',
                     choices=['roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
 parser.add_argument('--pretrained_bert_ckpt', default=None)
-parser.add_argument('--dataset', default='20ng', choices=['20ng', 'R8', 'R52', 'ohsumed', 'mr', 'enwiki'])
+parser.add_argument('--dataset', default='enwiki', choices=["enwiki", "itwiki", "frwiki", "rcv1en", "rcv2it", "rcv2fr"])
 parser.add_argument('--checkpoint_dir', default=None,
                     help='checkpoint directory, [bert_init]_[gcn_model]_[dataset] if not specified')
 parser.add_argument('--gcn_model', type=str, default='gcn', choices=['gcn', 'gat'])
@@ -71,7 +71,7 @@ logger.addHandler(fh)
 logger.setLevel(logging.INFO)
 
 cpu = th.device('cpu')
-gpu = cpu  # th.device('cuda:0')
+gpu = th.device('cuda:0')
 
 logger.info('arguments:')
 logger.info(str(args))
@@ -197,7 +197,7 @@ def train_step(engine, batch):
     train_mask = g.ndata['train'][idx].type(th.BoolTensor)
     y_pred = model(g, idx)[train_mask].float()
     y_true = g.ndata['label_train'][idx][train_mask].float()
-    # NOTE: must be 2 floats
+    # Must be 2 floats for BCE
     loss = F.binary_cross_entropy(y_pred, y_true)
     loss.backward()
     optimizer.step()
@@ -205,11 +205,13 @@ def train_step(engine, batch):
     train_loss = loss.item()
     with th.no_grad():
         if train_mask.sum() > 0:
-            y_true = y_true.detach().cpu()
-            y_pred = y_pred.argmax(axis=1).detach().cpu()
+            y_true = y_true.long().detach().cpu()
+            assert y_true.bool().any(dim=1).all().item() is True
+            y_pred = th.round(y_pred).long().detach().cpu()
             train_acc = accuracy_score(y_true, y_pred)
+            pre, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="macro", zero_division=0)
         else:
-            train_acc = 1
+            train_acc, pre, rec, f1 = 1, 1, 1, 1  # nothing to predict
     return train_loss, train_acc
 
 
@@ -231,7 +233,7 @@ def test_step(engine, batch):
         g = g.to(gpu)
         (idx,) = [x.to(gpu) for x in batch]
         # NOTE: must be 2 floats
-        y_pred = model(g, idx).float()
+        y_pred = th.round(model(g, idx)).float()
         y_true = g.ndata['label'][idx].float()
         return y_pred, y_true
 
@@ -239,9 +241,7 @@ def test_step(engine, batch):
 evaluator = Engine(test_step)
 metrics = {
     'acc': Accuracy(is_multilabel=True),
-    'pre': Precision(is_multilabel=True, average=True),
-    'rec': Recall(is_multilabel=True, average=True),
-    'f1': Fbeta(beta=1, average=True),
+    'cr': ClassificationReport(output_dict=True, is_multilabel=True),
     'nll': Loss(th.nn.BCELoss())
 }
 for n, f in metrics.items():
@@ -251,20 +251,23 @@ for n, f in metrics.items():
 @trainer.on(Events.EPOCH_COMPLETED)
 def log_training_results(trainer):
     evaluator.run(idx_loader_train)
-    metrics = evaluator.state.metrics
-    train_acc, train_nll, train_pre, train_rec, train_f1 = metrics["acc"], metrics["nll"], metrics["pre"], metrics[
-        "rec"], metrics["f1"]
+    metrics_res = evaluator.state.metrics
+    train_acc, train_nll, train_cr = metrics_res["acc"], metrics_res["nll"], metrics_res["cr"]["macro avg"]
+    train_pre, train_rec, train_f1 = train_cr["precision"], train_cr["recall"], train_cr["f1-score"]
+
     evaluator.run(idx_loader_val)
-    metrics = evaluator.state.metrics
-    val_acc, val_nll, val_pre, val_rec, val_f1 = metrics["acc"], metrics["nll"], metrics["pre"], metrics["rec"], \
-                                                 metrics["f1"]
+    metrics_res = evaluator.state.metrics
+    val_acc, val_nll, val_cr = metrics_res["acc"], metrics_res["nll"], metrics_res["cr"]["macro avg"]
+    val_pre, val_rec, val_f1 = val_cr["precision"], val_cr["recall"], val_cr["f1-score"]
+
     evaluator.run(idx_loader_test)
-    metrics = evaluator.state.metrics
-    test_acc, test_nll, test_pre, test_rec, test_f1 = metrics["acc"], metrics["nll"], metrics["pre"], metrics["rec"], \
-                                                      metrics["f1"]
+    metrics_res = evaluator.state.metrics
+    test_acc, test_nll, test_cr = metrics_res["acc"], metrics_res["nll"], metrics_res["cr"]["macro avg"]
+    test_pre, test_rec, test_f1 = test_cr["precision"], test_cr["recall"], test_cr["f1-score"]
+
     logger.info(
-        "Epoch: {}  Train acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f} Val acc: {:.4f} loss: {:.4f} "
-        "pre: {:.4f} rec: {:.4f} f1: {:.4f} Test acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f}"
+        "Epoch: {}  Train acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f} || Val acc: {:.4f} loss: {:.4f} "
+        "pre: {:.4f} rec: {:.4f} f1: {:.4f} || Test acc: {:.4f} loss: {:.4f} pre: {:.4f} rec: {:.4f} f1: {:.4f}"
             .format(trainer.state.epoch, train_acc, train_nll, train_pre, train_rec, train_f1, val_acc, val_nll,
                     val_pre, val_rec, val_f1, test_acc, test_nll, test_pre, test_rec, test_f1)
     )

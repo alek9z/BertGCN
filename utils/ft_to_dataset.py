@@ -10,7 +10,6 @@ from utils import clean_str
 dataset = "enwiki"
 dataset_path = f"/home/alessandro/work/repo/txt-class-experiments/data/generated/{dataset}/"
 encoder_name = "encoder.bin.xz"
-num_classes = 100
 
 
 def parse_file(file: str, encoder):
@@ -30,16 +29,16 @@ def parse_file(file: str, encoder):
 
 
 def file_to_dataset():
-    LIMIT = 100
+    limit = 1000000000000000000  # just for debugging
     encoder = joblib.load(os.path.join(dataset_path, encoder_name))
 
     train_labels, train_texts = parse_file("train.txt", encoder)
     test_labels, test_texts = parse_file("test.txt", encoder)
 
-    train_labels = train_labels[:LIMIT]
-    train_texts = train_texts[:LIMIT]
-    test_labels = test_labels[:LIMIT]
-    test_texts = test_texts[:LIMIT]
+    train_labels = train_labels[:limit]
+    train_texts = train_texts[:limit]
+    test_labels = test_labels[:limit]
+    test_texts = test_texts[:limit]
 
     labels_str = [f"{i}\ttrain\t{labs}" for i, labs in enumerate(train_labels)]
     offset = len(labels_str)

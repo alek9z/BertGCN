@@ -1,4 +1,3 @@
-import torch
 import torch as th
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
@@ -48,11 +47,11 @@ class BertGCN(th.nn.Module):
         else:
             cls_feats = g.ndata['cls_feats'][idx]
         cls_logit = self.classifier(cls_feats)
-        cls_pred = torch.sigmoid(cls_logit)
+        cls_pred = th.sigmoid(cls_logit)
         gcn_logit = self.gcn(g.ndata['cls_feats'], g, g.edata['edge_weight'])[idx]
-        gcn_pred = torch.sigmoid(gcn_logit)
+        gcn_pred = th.sigmoid(gcn_logit)
         pred = (gcn_pred + 1e-10) * self.m + cls_pred * (1 - self.m)
-        pred = th.log(pred)
+        # pred = th.log(pred) # remove to preserve [0, 1] range
         return pred
 
 
@@ -85,9 +84,9 @@ class BertGAT(th.nn.Module):
         else:
             cls_feats = g.ndata['cls_feats'][idx]
         cls_logit = self.classifier(cls_feats)
-        cls_pred = torch.sigmoid(cls_logit)
+        cls_pred = th.sigmoid(cls_logit)
         gcn_logit = self.gcn(g.ndata['cls_feats'], g)[idx]
-        gcn_pred = torch.sigmoid(gcn_logit)
+        gcn_pred = th.sigmoid(gcn_logit)
         pred = (gcn_pred + 1e-10) * self.m + cls_pred * (1 - self.m)
-        pred = th.log(pred)
+        # pred = th.log(pred)
         return pred
