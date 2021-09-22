@@ -8,7 +8,7 @@ import numpy as np
 from utils import clean_str
 
 dataset = "enwiki"
-dataset_path = f"/home/alessandro/work/repo/txt-class-experiments/data/generated/{dataset}/"
+dataset_path = f"/home/alessandroz/repo/BertGCN/data/raw/{dataset}/"
 encoder_name = "encoder.bin.xz"
 
 

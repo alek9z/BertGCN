@@ -17,7 +17,7 @@ from utils import *
 parser = argparse.ArgumentParser()
 parser.add_argument('--max_length', type=int, default=512, help='the input length for bert')
 parser.add_argument('--batch_size', type=int, default=8)
-parser.add_argument('--nb_epochs', type=int, default=10)
+parser.add_argument('--nb_epochs', type=int, default=100)
 parser.add_argument('--bert_lr', type=float, default=1.5e-5)
 parser.add_argument('--dataset', default='enwiki',
                     choices=["enwiki", "itwiki", "frwiki", "rcv1en", "rcv2it", "rcv2fr"])
