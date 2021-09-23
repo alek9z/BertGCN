@@ -271,7 +271,7 @@ def log_training_results(trainer):
             .format(trainer.state.epoch, train_acc, train_nll, train_pre, train_rec, train_f1, val_acc, val_nll,
                     val_pre, val_rec, val_f1, test_acc, test_nll, test_pre, test_rec, test_f1)
     )
-    if val_acc > log_training_results.best_val_acc:
+    if val_f1 > log_training_results.best_metric:
         logger.info("New checkpoint")
         th.save(
             {
@@ -285,9 +285,9 @@ def log_training_results(trainer):
                 ckpt_dir, 'checkpoint.pth'
             )
         )
-        log_training_results.best_val_acc = val_acc
+        log_training_results.best_metric = val_f1
 
 
-log_training_results.best_val_acc = 0
+log_training_results.best_metric = -1.0
 g = update_feature()
 trainer.run(idx_loader, max_epochs=nb_epochs)
