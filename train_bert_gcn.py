@@ -21,7 +21,9 @@ parser.add_argument('--batch_size', type=int, default=8)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
 parser.add_argument('--nb_epochs', type=int, default=50)
 parser.add_argument('--bert_init', type=str, default='roberta-base',
-                    choices=['roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
+                    choices=['roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased',
+                             'bert-base-cased', 'dbmdz/bert-base-italian-xxl-cased', 'flaubert/flaubert_base_cased',
+                             'xlm-roberta-base'])
 parser.add_argument('--pretrained_bert_ckpt', default=None)
 parser.add_argument('--dataset', default='enwiki', choices=["enwiki", "itwiki", "frwiki", "rcv1en", "rcv2it", "rcv2fr"])
 parser.add_argument('--checkpoint_dir', default=None,
