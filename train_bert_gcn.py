@@ -32,7 +32,7 @@ parser.add_argument('--gcn_model', type=str, default='gcn', choices=['gcn', 'gat
 parser.add_argument('--gcn_layers', type=int, default=2)
 parser.add_argument('--n_hidden', type=int, default=200,
                     help='the dimension of gcn hidden layer, the dimension for gat is n_hidden * heads')
-parser.add_argument('--heads', type=int, default=8, help='the number of attentionn heads for gat')
+parser.add_argument('--heads', type=int, default=8, help='the number of attention heads for gat')
 parser.add_argument('--dropout', type=float, default=0.5)
 parser.add_argument('--gcn_lr', type=float, default=1e-3)
 parser.add_argument('--bert_lr', type=float, default=1e-5)
@@ -105,8 +105,8 @@ else:
 
 if pretrained_bert_ckpt is not None:
     ckpt = th.load(pretrained_bert_ckpt, map_location=gpu)
-    model.bert_model.load_state_dict(ckpt['bert_model'])
-    model.classifier.load_state_dict(ckpt['classifier'])
+    # Workaround to load custom pretrained classifier, with a different checkpoint structure
+    model.bert_clf.load_state_dict({".".join(k.split(".")[1:]): v for k, v in ckpt['model'].items()})
 
 # load documents and compute input encodings
 corpse_file = './data/corpus/' + dataset + '_shuffle.txt'
@@ -171,7 +171,8 @@ def update_feature():
         cls_list = []
         for i, batch in enumerate(dataloader):
             input_ids, attention_mask = [x.to(gpu) for x in batch]
-            output = model.bert_model(input_ids=input_ids, attention_mask=attention_mask)[0][:, 0]
+            output = model.bert_clf(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True) \
+                         .hidden_states[-1][:, 0]
             cls_list.append(output.cpu())
         cls_feat = th.cat(cls_list, axis=0)
     g = g.to(cpu)
@@ -180,11 +181,9 @@ def update_feature():
 
 
 optimizer = th.optim.Adam([
-    {'params': model.bert_model.parameters(), 'lr': bert_lr},
-    {'params': model.classifier.parameters(), 'lr': bert_lr},
+    {'params': model.bert_clf.parameters(), 'lr': bert_lr},
     {'params': model.gcn.parameters(), 'lr': gcn_lr},
-], lr=1e-3
-)
+], lr=1e-3)
 scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[30], gamma=0.1)
 
 
@@ -277,8 +276,7 @@ def log_training_results(trainer):
         logger.info("New checkpoint")
         th.save(
             {
-                'bert_model': model.bert_model.state_dict(),
-                'classifier': model.classifier.state_dict(),
+                'model': model.bert_clf.state_dict(),
                 'gcn': model.gcn.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'epoch': trainer.state.epoch,

@@ -1,6 +1,6 @@
 import torch as th
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, AutoModelForSequenceClassification, AutoConfig
 
 from .torch_gat import GAT
 from .torch_gcn import GCN
@@ -27,9 +27,9 @@ class BertGCN(th.nn.Module):
         self.m = m
         self.nb_class = nb_class
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model)
-        self.bert_model = AutoModel.from_pretrained(pretrained_model)
-        self.feat_dim = list(self.bert_model.modules())[-2].out_features
-        self.classifier = th.nn.Linear(self.feat_dim, nb_class)
+        config = AutoConfig.from_pretrained(pretrained_model, num_labels=nb_class)
+        self.bert_clf = AutoModelForSequenceClassification.from_pretrained(pretrained_model, config=config)
+        self.feat_dim = self.bert_clf.config.hidden_size
         self.gcn = GCN(
             in_feats=self.feat_dim,
             n_hidden=n_hidden,
@@ -41,12 +41,11 @@ class BertGCN(th.nn.Module):
 
     def forward(self, g, idx):
         input_ids, attention_mask = g.ndata['input_ids'][idx], g.ndata['attention_mask'][idx]
+        bert_output = self.bert_clf(input_ids, attention_mask, output_hidden_states=True)
         if self.training:
-            cls_feats = self.bert_model(input_ids, attention_mask)[0][:, 0]
+            cls_feats = bert_output.hidden_states[-1][:, 0]
             g.ndata['cls_feats'][idx] = cls_feats
-        else:
-            cls_feats = g.ndata['cls_feats'][idx]
-        cls_logit = self.classifier(cls_feats)
+        cls_logit = bert_output.logits
         cls_pred = th.sigmoid(cls_logit)
         gcn_logit = self.gcn(g.ndata['cls_feats'], g, g.edata['edge_weight'])[idx]
         gcn_pred = th.sigmoid(gcn_logit)
@@ -62,9 +61,9 @@ class BertGAT(th.nn.Module):
         self.m = m
         self.nb_class = nb_class
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model)
-        self.bert_model = AutoModel.from_pretrained(pretrained_model)
-        self.feat_dim = list(self.bert_model.modules())[-2].out_features
-        self.classifier = th.nn.Linear(self.feat_dim, nb_class)
+        config = AutoConfig.from_pretrained(pretrained_model, num_labels=nb_class)
+        self.bert_clf = AutoModelForSequenceClassification.from_pretrained(pretrained_model, config=config)
+        self.feat_dim = self.bert_clf.config.hidden_size
         self.gcn = GAT(
             num_layers=gcn_layers - 1,
             in_dim=self.feat_dim,
@@ -78,12 +77,11 @@ class BertGAT(th.nn.Module):
 
     def forward(self, g, idx):
         input_ids, attention_mask = g.ndata['input_ids'][idx], g.ndata['attention_mask'][idx]
+        bert_output = self.bert_clf(input_ids, attention_mask, output_hidden_states=True)
         if self.training:
-            cls_feats = self.bert_model(input_ids, attention_mask)[0][:, 0]
+            cls_feats = bert_output.hidden_states[-1][:, 0]
             g.ndata['cls_feats'][idx] = cls_feats
-        else:
-            cls_feats = g.ndata['cls_feats'][idx]
-        cls_logit = self.classifier(cls_feats)
+        cls_logit = bert_output.logits
         cls_pred = th.sigmoid(cls_logit)
         gcn_logit = self.gcn(g.ndata['cls_feats'], g)[idx]
         gcn_pred = th.sigmoid(gcn_logit)

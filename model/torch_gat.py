@@ -8,7 +8,7 @@ Pytorch implementation: https://github.com/Diego999/pyGAT
 """
 
 import torch.nn as nn
-from dgl.nn import GATConv
+from dgl.nn.pytorch import GATConv
 
 
 class GAT(nn.Module):
